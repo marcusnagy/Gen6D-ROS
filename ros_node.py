@@ -73,6 +73,7 @@ class Gen6DPredictor:
 
         self.num = args.num
         self.std = args.std
+        self.depth_radius = 20
 
         self.pose_init = None
         self.hist_pts = []
@@ -85,6 +86,7 @@ class Gen6DPredictor:
             PoseStamped,
             queue_size=1
         )
+        print("- '%s' publishes to '%s" % (args.database, self.publisher_topic))
 
     def clear_cache(self):
         self.pose_init = None
@@ -140,8 +142,16 @@ class Gen6DPredictor:
         # Acquire depth
         centre_img_p = image_pt(K @ (R @ self.object_center +t))
         px, py = centre_img_p
-        rx = np.arange(px - 2, px + 2, 1)
-        ry = np.arange(py - 2, py + 2, 1)
+        rx = np.arange(
+            px - self.depth_radius, 
+            px + self.depth_radius, 
+            1
+        )
+        ry = np.arange(
+            py - self.depth_radius, 
+            py + self.depth_radius, 
+            1
+        )
 
         depths = list()
         for i in rx:
@@ -217,7 +227,7 @@ class Coordinator():
         self.depth_image = matrix
 
     def ros_command_topic_hook(self, msg: StringMessage):
-        command = json.load(msg.data)
+        command = json.loads(msg.data)
         
         should_predict = command["predict"]
         predict_id = command["object"]
@@ -284,7 +294,7 @@ if __name__ == "__main__":
 
     print("Subscribing")
     coordinator.start_listen()
-    rate = rospy.Rate(2.0)
+    rate = rospy.Rate(6.0)
 
     while not rospy.is_shutdown():
         coordinator.tick()
