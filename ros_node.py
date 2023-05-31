@@ -1,4 +1,5 @@
 
+import json
 import cv2
 from eval import visualize_intermediate_results
 import rospy
@@ -6,6 +7,7 @@ from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import PoseStamped
 import tf.transformations as tft
+from std_msgs.msg import String as StringMessage
 
 import numpy as np
 
@@ -14,6 +16,11 @@ from estimator import name2estimator
 from utils.base_utils import load_cfg, project_points
 from utils.draw_utils import pts_range_to_bbox_pts, draw_bbox_3d
 from utils.pose_utils import pnp
+
+
+CUSTOM_OBJECTS = [
+    "custom/tetra"
+]
 
 
 def depth_pt(mat, pt):
@@ -64,29 +71,24 @@ class Gen6DPredictor:
         print("Object rotation: %s" % self.object_rotation)
         print("Object scale: %.3f" % self.object_scale)
 
-        self.depth_matrix = None
-
         self.num = args.num
         self.std = args.std
 
         self.pose_init = None
         self.hist_pts = []
 
+        self.publisher_topic = "gen6d/{}/pose".format(
+            args.database
+        )
         self.publisher = rospy.Publisher(
-            "gen6d/tetra/pose",
+            self.publisher_topic,
             PoseStamped,
             queue_size=1
         )
 
-    def ros_image_topic_hook(self, msg: Image):
-        color = CvBridge().imgmsg_to_cv2(msg, desired_encoding="rgb8")
-        img = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
-        img = np.asarray(img)
-        self.predict(img)
-
-    def ros_depth_topic_hook(self, msg: Image):
-        matrix = CvBridge().imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        self.depth_matrix = matrix
+    def clear_cache(self):
+        self.pose_init = None
+        self.hist_pts = []
 
     def draw_axes(self, img, R, t, K, o=(0,0,0)):
         p = R @ o + t
@@ -96,12 +98,17 @@ class Gen6DPredictor:
         return img
 
     def draw_preview(self, image, box_3d, inter, K):
-        image = visualize_intermediate_results(image, K, inter, self.estimator.ref_info, box_3d)
-        cv2.imshow("preview", image)
-        cv2.waitKey(1)
+        image = visualize_intermediate_results(
+            image, 
+            K, 
+            inter, 
+            self.estimator.ref_info, 
+            box_3d
+        )
+        return image
 
-    def predict(self, image: np.ndarray):
-        img = image
+    def predict(self, colour: np.ndarray, depth: np.ndarray):
+        img = colour
         # generate a pseudo K
         h, w, _ = img.shape
         f=np.sqrt(h**2+w**2)
@@ -113,7 +120,7 @@ class Gen6DPredictor:
                         [0     , 0     , 1     ]], np.float32)
         # K_new = cv2.getOptimalNewCameraMatrix() ## Could possibly use this
 
-        if self.depth_matrix is None:
+        if depth is None:
             return
 
         if self.pose_init is not None:
@@ -139,13 +146,10 @@ class Gen6DPredictor:
         depths = list()
         for i in rx:
             for j in ry:
-                val = depth_pt(self.depth_matrix, (i,j))
+                val = depth_pt(depth, (i,j))
                 if val == 0.0:
                     continue
                 depths.append(val)
-        # if len(depths) == 0:
-        #     # We wish to have depth to get a proper metric estimate
-        #     return
         
         depth_val = np.mean(depths)
         # Offset the depth to move the value deeper
@@ -164,9 +168,6 @@ class Gen6DPredictor:
         out_pose.pose.position.x = p[0]
         out_pose.pose.position.y = p[1]
         out_pose.pose.position.z = p[2]
-        # out_pose.pose.position.x = p[2]
-        # out_pose.pose.position.y = -p[0]
-        # out_pose.pose.position.z = -p[1]
         
         padded = np.eye(4)
         padded[0:3,0:3] = R
@@ -178,38 +179,116 @@ class Gen6DPredictor:
 
         self.publisher.publish(out_pose)
 
-        self.draw_axes(img, R, t, K, self.object_center)
-        self.draw_preview(img, self.object_bbox_3d, inter_results, K)
+        preview = self.draw_axes(img, R, t, K, self.object_center)
+        preview = self.draw_preview(preview, self.object_bbox_3d, inter_results, K)
+
+        return preview
+
+
+def initialize_predictor(database) -> Gen6DPredictor:
+    args = PredictorArgs()
+    args.config = 'configs/gen6d_pretrain.yaml'
+    args.database = database
+    args.num = 5
+    args.std = 2.5
+    return Gen6DPredictor(args)
+
+
+class Coordinator():
+    def __init__(self) -> None:
+        self.colour_image = None
+        self.depth_image = None
+
+        self.predictors = dict()
+        self.should_predict = dict()
+
+    def initialize(self):
+        for database in CUSTOM_OBJECTS:
+            self.should_predict[database] = False
+            self.predictors[database] = initialize_predictor(database)
+
+    def ros_image_topic_hook(self, msg: Image):
+        color = CvBridge().imgmsg_to_cv2(msg, desired_encoding="rgb8")
+        img = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+        self.colour_image = np.asarray(img)
+
+    def ros_depth_topic_hook(self, msg: Image):
+        matrix = CvBridge().imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        self.depth_image = matrix
+
+    def ros_command_topic_hook(self, msg: StringMessage):
+        command = json.load(msg.data)
+        
+        should_predict = command["predict"]
+        predict_id = command["object"]
+
+        print("{} predicting {}".format(
+            "Started" if should_predict else "Stopped",
+            predict_id
+        ))
+
+        if not predict_id in self.predictors:
+            print("Error - Unknown database: '%s'" % predict_id)
+            return
+
+        if should_predict:
+            self.should_predict[predict_id] = True
+        else:
+            self.should_predict[predict_id] = False
+            self.predictors[predict_id].clear_cache()
+
+    def start_listen(self):
+        self.command_listener = rospy.Subscriber(
+            "/gen6d/command",
+            StringMessage,
+            self.ros_command_topic_hook,
+            queue_size=1
+        )
+        self.rgb_subscriber = rospy.Subscriber(
+            "/realsense/rgb/image_raw",
+            Image,
+            self.ros_image_topic_hook,
+            queue_size=1
+        )
+        self.depth_subscriber = rospy.Subscriber(
+            "/realsense/aligned_depth_to_color/image_raw",
+            Image,
+            self.ros_depth_topic_hook,
+            queue_size=1
+        )
+
+    def stop_listen(self):
+        self.rgb_subscriber.unregister()
+        self.depth_subscriber.unregister()
+        self.command_listener.unregister()
+
+    def tick(self):
+        image = None
+        for key in self.predictors:
+            if not self.should_predict[key]: 
+                continue
+            predictor: Gen6DPredictor = self.predictors[key]
+            image = predictor.predict(self.colour_image, self.depth_image)
+        
+        if not image is None:
+            cv2.imshow("preview", image)
+            cv2.waitKey(1)
 
 
 if __name__ == "__main__":
     rospy.init_node("gen_6d_tracker", anonymous=True)
 
     print("Initializing")
-    args = PredictorArgs()
-    args.config = 'configs/gen6d_pretrain.yaml'
-    args.database = "custom/tetra"
-    args.num = 5
-    args.std = 2.5
-    predictor = Gen6DPredictor(args)
+    coordinator = Coordinator()
+    coordinator.initialize()
 
     print("Subscribing")
-    subscriber = rospy.Subscriber(
-        "/realsense/rgb/image_raw",
-        Image,
-        predictor.ros_image_topic_hook,
-        queue_size=1
-    )
-    subscriber = rospy.Subscriber(
-        "/realsense/aligned_depth_to_color/image_raw",
-        Image,
-        predictor.ros_depth_topic_hook,
-        queue_size=1
-    )
-
+    coordinator.start_listen()
     rate = rospy.Rate(2.0)
 
     while not rospy.is_shutdown():
+        coordinator.tick()
         rate.sleep()
 
-    subscriber.unregister()
+    print("Good bye")
+    coordinator.stop_listen()
