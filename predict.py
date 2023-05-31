@@ -1,6 +1,7 @@
 import argparse
 import subprocess
 from pathlib import Path
+import cv2
 
 import numpy as np
 from skimage.io import imsave, imread
@@ -24,6 +25,19 @@ def weighted_pts(pts_list, weight_num=10, std_inv=10):
         pts_list = pts_list[-weight_num:]
     pts = np.sum(np.asarray(pts_list) * weights[:,None,None],0)/np.sum(weights)
     return pts
+
+
+def image_pt(a):
+    return [int(x) for x in (a/(a[-1]))[0:-1]]
+
+
+def draw_axes(img, R, t, K, o=(0,0,0)):
+    p = R @ o + t
+    img = cv2.line(img, image_pt(K @ p), image_pt(K @ (R @ ((1,0,0) + o) + t)), (255,0,0), 5)
+    img = cv2.line(img, image_pt(K @ p), image_pt(K @ (R @ ((0,1,0) + o) + t)), (0,255,0), 5)
+    img = cv2.line(img, image_pt(K @ p), image_pt(K @ (R @ ((0,0,1) + o) + t)), (0,0,255), 5)
+    return img
+
 
 def main(args):
     cfg = load_cfg(args.cfg)
@@ -62,14 +76,20 @@ def main(args):
         bbox_img = draw_bbox_3d(img, pts, (0,0,255))
         imsave(f'{str(output_dir)}/images_out/{que_id}-bbox.jpg', bbox_img)
         np.save(f'{str(output_dir)}/images_out/{que_id}-pose.npy', pose_pr)
-        imsave(f'{str(output_dir)}/images_inter/{que_id}.jpg', visualize_intermediate_results(img, K, inter_results, estimator.ref_info, object_bbox_3d))
 
         hist_pts.append(pts)
         pts_ = weighted_pts(hist_pts, weight_num=args.num, std_inv=args.std)
         pose_ = pnp(object_bbox_3d, pts_, K)
         pts__, _ = project_points(object_bbox_3d, pose_, K)
         bbox_img_ = draw_bbox_3d(img, pts__, (0,0,255))
+        R = pose_[0:3,0:3]
+        t = pose_[:,-1]
+        bbox_img_ = draw_axes(bbox_img_, R, t, K, np.mean(object_bbox_3d, axis=0))
         imsave(f'{str(output_dir)}/images_out_smooth/{que_id}-bbox.jpg', bbox_img_)
+
+        inter = visualize_intermediate_results(img, K, inter_results, estimator.ref_info, object_bbox_3d)
+        inter = draw_axes(inter, R, t, K, np.mean(object_bbox_3d, axis=0))
+        imsave(f'{str(output_dir)}/images_inter/{que_id}.jpg', inter)
 
 
     cmd=[args.ffmpeg, '-y', '-framerate','30', '-r', '30',
