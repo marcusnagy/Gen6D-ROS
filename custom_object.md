@@ -31,6 +31,7 @@ In the following, we will generate reference images for a `mouse` object and pre
    ```shell
    python prepare.py --action sfm --database_name custom/mouse --colmap <path-to-your-colmap-exe>
    ```
+   > **NOTE**: COLMAP needs to be able to run with CUDA enabled for this to work. This won't simply be enabled by default when running ~`sudo apt-get install colmap`~, you should instead follow the guide provided [here](https://colmap.github.io/install.html) and <ins>pay attention</ins> to what needs to be done to enable CUDA support.
 5. Manually specify the object region by cropping the point cloud of the object. 
    As an example, we use the [CloudCompare](https://www.cloudcompare.org/) to visualize and process the reconstructed point cloud from COLMAP.
    The reconstructed point cloud locates at `data/custom/mouse/colmap/pointcloud.ply`.
