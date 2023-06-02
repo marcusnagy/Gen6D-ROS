@@ -17,15 +17,16 @@ from utils.base_utils import load_cfg, project_points
 from utils.draw_utils import pts_range_to_bbox_pts, draw_bbox_3d
 from utils.pose_utils import pnp
 
-
+# TODO: Future prospect - refactor this and other 'constant' variables to a JSON or YAML config
 CUSTOM_OBJECTS = [
+    "custom/tetra_two",
     "custom/tetra"
 ]
 
 
 def depth_pt(mat, pt):
-    # the value is an integer and we assumed it might be in milimetre
-    # and the depth matrix is arranged y by x, so assess it (y,x) not (x,y)
+    # The value is an integer and we assumed it might be in millimetre
+    # and the depth matrix is arranged y by x, so access it (y,x) not (x,y)
     val = mat[pt[1]][pt[0]]
     val /= 1000 # to metre
     return val
@@ -127,6 +128,9 @@ class Gen6DPredictor:
 
         if self.pose_init is not None:
             self.estimator.cfg['refine_iter'] = 1 # we only refine one time after initialization
+        else:
+            self.estimator.cfg["refine_iter"] = 3
+
         pose_pr, inter_results = self.estimator.predict(img, K, pose_init=self.pose_init)
         self.pose_init = pose_pr
 
@@ -163,11 +167,14 @@ class Gen6DPredictor:
         
         depth_val = np.mean(depths)
         # Offset the depth to move the value deeper
-        depth_val += 0.05
-        print(depth_val)
+        depth_val += 0.05 # should be a variable of the object we wish to detect
+        #print(depth_val)
 
         out_pose = PoseStamped()
         out_pose.header.stamp = rospy.Time(0)
+        
+        # robot quirk, should have been "view_frame" or "realsense_link", or whichever
+        # frame the camera is expected to be attached to
         out_pose.header.frame_id = "skiros:TransformationPose-49"
 
         s = (1/(10 * self.object_scale))
@@ -214,6 +221,7 @@ class Coordinator():
 
     def initialize(self):
         for database in CUSTOM_OBJECTS:
+            print("Loading '%s':" % database)
             self.should_predict[database] = False
             self.predictors[database] = initialize_predictor(database)
 
@@ -232,14 +240,14 @@ class Coordinator():
         should_predict = command["predict"]
         predict_id = command["object"]
 
+        if not predict_id in self.predictors:
+            print("Error - Unknown database: '%s'" % predict_id)
+            return
+
         print("{} predicting {}".format(
             "Started" if should_predict else "Stopped",
             predict_id
         ))
-
-        if not predict_id in self.predictors:
-            print("Error - Unknown database: '%s'" % predict_id)
-            return
 
         if should_predict:
             self.should_predict[predict_id] = True
@@ -285,6 +293,7 @@ class Coordinator():
             cv2.waitKey(1)
 
 
+# TODO: Future prospect - refactor the node into an action-server
 if __name__ == "__main__":
     rospy.init_node("gen_6d_tracker", anonymous=True)
 
@@ -300,5 +309,5 @@ if __name__ == "__main__":
         coordinator.tick()
         rate.sleep()
 
-    print("Good bye")
+    print("Goodbye")
     coordinator.stop_listen()
