@@ -183,3 +183,28 @@ We provide a paper list about recent generalizable 6-DoF object pose estimators 
   year={2022}
 }
 ```
+---
+# Gen6D ROS Node Execution Guide
+
+This repository contains an implementation of a ROS node, specifically designed to publish the estimated pose of a detected object by calculating the center of the object. The [implementation file](ros_node.py) refers to a [list of paths](https://github.com/marcusnagy/Gen6D-ROS/blob/aac19b84405b74e5ae7cbf832bb5bb9ce3000196/ros_node.py#L21), each path directing towards an object or predictor you intend to load.
+
+The node actively listens for messages on the `/gen6D/command` topic, expecting a ROS `std_msg.msg String` formatted as JSON. For instance, 
+
+```json
+{
+    "predict": True,
+    "object": "custom/tetra"
+}
+```
+
+The `predict` parameter controls the node's operations, instructing it to either commence ('True') or halt ('False') pose estimation. When the estimation stops, all data, including weights, are cleared for the next round of estimation. During the pose estimation process, the pose is published on the `/gen6d/custom/{object name}/pose` topic as a PoseStamped message. Note that the `object` string should coincide with the path specified in the `CUSTOM_OBJECTS` list found in the [`ros_node.py`](ros_node.py) file.
+
+For the node to function correctly with your specific setup, you'll need to make a few modifications in [`ros_node.py`](ros_node.py):
+
+1. Adjust the _camera matrix_ **K** to align with your camera configuration in `predict(colour, depth)`.
+2. Modify the subscriber (rgb_subscriber) to receive the [RGB image data](https://github.com/marcusnagy/Gen6D-ROS/blob/aac19b84405b74e5ae7cbf832bb5bb9ce3000196/ros_node.py#L257) from the appropriate topic.
+3. Update the subscriber (depth_subscriber) to fetch the [Depth image data](https://github.com/marcusnagy/Gen6D-ROS/blob/aac19b84405b74e5ae7cbf832bb5bb9ce3000196/ros_node.py#L263) from the correct topic.
+
+
+## Known Issues
+During our initial testing, we observed that the estimated depth appeared inaccurate, requiring a scaling factor to correct it. We used depth data sourced from the topic to extract the depth of the calculated object center within a pixel patch, and then averaged these values. By subsequently applying an offset value, we achieved a satisfactory depth estimation that allowed us to proceed with the object pickup operation.
